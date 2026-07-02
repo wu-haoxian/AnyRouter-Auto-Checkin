@@ -4,6 +4,8 @@ import os
 import sys
 import base64
 import json
+import time
+import subprocess
 import requests
 import traceback
 from datetime import datetime, timezone, timedelta
@@ -14,25 +16,14 @@ from playwright.sync_api import sync_playwright
 # ============================================================
 USER_ID      = os.getenv("USER_ID") or "173952"
 SESSION      = os.getenv("SESSION") or "MTc4Mjk2Nzk5N3xEWDhFQVFMX2dBQUJFQUVRQUFEXzVQLUFBQWNHYzNSeWFXNW5EQVlBQkhKdmJHVURhVzUwQkFJQUFnWnpkSEpwYm1jTUNBQUdjM1JoZEhWekEybHVkQVFDQUFJR2MzUnlhVzVuREFjQUJXZHliM1Z3Qm5OMGNtbHVad3dKQUFka1pXWmhkV3gwQm5OMGNtbHVad3dGQUFOaFptWUdjM1J5YVc1bkRBWUFCRWhOUjFnR2MzUnlhVzVuREEwQUMyOWhkWFJvWDNOMFlYUmxCbk4wY21sdVp3d09BQXhCTkhZeWNrdDFia05XVUVNR2MzUnlhVzVuREFRQUFtbGtBMmx1ZEFRRkFQMEZUd0FHYzNSeWFXNW5EQW9BQ0hWelpYSnVZVzFsQm5OMGNtbHVad3dRQUE1c2FXNTFlR1J2WHpFM016azFNZz09fKughFbFl4sHiBeB3s4UApu9M0ph8mPSn9n9OMYZnGfr"
-SITE_URL     = os.getenv("SITE_URL") or "https://anyrouter.top"
-TG_BOT_TOKEN = os.getenv("TG_BOT_TOKEN") or ""  # Telegram bot token,不需要通知可以留空
-TG_CHAT_ID   = os.getenv("TG_CHAT_ID") or ""    # Telegram chat id
-GITHUB_TOKEN = os.getenv("GITHUB_TOKEN", "") or ""  # GitHub PAT（用于更新 Secrets）
-GITHUB_REPOSITORY = os.getenv("GITHUB_REPOSITORY") or "" 
+TG_BOT_TOKEN = os.getenv("TG_BOT_TOKEN") or "7535846002:AAF-b51hzSRufs1UGt6o-9hZEvVB5wwMJOM"  # Telegram bot token,不需要通知可以留空
+TG_CHAT_ID   = os.getenv("TG_CHAT_ID") or "6018078561"    # Telegram chat id
 
-# Session 有效期与阈值
-SESSION_TTL_DAYS = int(os.getenv("SESSION_TTL_DAYS", "7"))
-SESSION_THRESHOLD_DAYS = int(os.getenv("SESSION_THRESHOLD_DAYS", "2"))
-
-# Quota 兑换比例（New API 默认 500000 quota = $1）
-QUOTA_PER_DOLLAR = int(os.getenv("QUOTA_PER_DOLLAR", "500000"))
-
-# Cookie 域名
-SITE_DOMAIN = "anyrouter.top"
-
-# WAF 需要的 Cookie 名称
+SITE_URL = "https://anyrouter.top"
+SESSION_TTL_DAYS = 30  # Session 有效期 30 天，剩余 < 3 天则更新
+SESSION_THRESHOLD_DAYS = 3
+QUOTA_PER_DOLLAR = 500000 
 WAF_COOKIE_NAMES = ["acw_tc", "cdn_sec_tc", "acw_sc__v2"]
-
 
 # ============================================================
 # 工具函数
@@ -44,12 +35,6 @@ def log(level: str, msg: str):
 
 
 def decode_session_timestamp(session_value: str) -> int | None:
-    """
-    从 gorilla securecookie 格式的 SESSION 值中解码创建时间戳。
-    Cookie 值格式为: timestamp|base64(data)|base64(hmac)
-    各部分用 | 分隔，第一部分是 Unix 时间戳（十进制秒）。
-    注意：整个值不是 base64 编码的，| 是字面分隔符。
-    """
     if not session_value:
         return None
 
@@ -82,19 +67,14 @@ def decode_session_timestamp(session_value: str) -> int | None:
     return None
 
 
-def check_session_expiry(session_value: str, ttl_days: int = 7, threshold_days: int = 2):
-    """
-    检查 Session 是否即将过期。
-    Returns:
-        (remaining_days, need_update)
-    """
+def check_session_expiry(session_value: str):
     timestamp = decode_session_timestamp(session_value)
     if not timestamp:
         log("WARN", "无法解码 Session 时间戳，跳过期检查")
         return None, False
 
     created_time = datetime.fromtimestamp(timestamp, tz=timezone.utc)
-    expiry_time = created_time + timedelta(days=ttl_days)
+    expiry_time = created_time + timedelta(days=SESSION_TTL_DAYS)
     now = datetime.now(tz=timezone.utc)
 
     remaining = expiry_time - now
@@ -107,83 +87,35 @@ def check_session_expiry(session_value: str, ttl_days: int = 7, threshold_days: 
     log("INFO", f"Session 过期时间: {expiry_local}")
     log("INFO", f"剩余有效时间: {remaining_days:.2f} 天")
 
-    need_update = remaining_days < threshold_days
+    need_update = remaining_days < SESSION_THRESHOLD_DAYS
     if need_update:
-        log("WARN", f"Session 剩余 {remaining_days:.2f} 天 < {threshold_days} 天阈值，需要更新！")
+        log("WARN", f"Session 剩余 {remaining_days:.2f} 天 < {SESSION_THRESHOLD_DAYS} 天，需要更新！")
 
     return remaining_days, need_update
 
 
-def update_github_secret(token: str, repository: str, secret_name: str, secret_value: str) -> bool:
-    """通过 GitHub REST API 更新 Actions Secret"""
-    if not token:
-        log("WARN", "GITHUB_TOKEN 未配置，跳过 Secret 更新")
+def update_github_secret(secret_name: str, new_value: str) -> bool:
+    """通过 gh CLI 更新 GitHub Actions Secret"""
+    if not new_value:
+        log("WARN", f"跳过更新 {secret_name}：新值为空")
         return False
-    if not repository:
-        log("WARN", "GITHUB_REPOSITORY 未配置，跳过 Secret 更新")
-        return False
+
+    masked = new_value[:4] + "..." + new_value[-4:] if len(new_value) > 8 else "***"
+    log("INFO", f"🔄 更新 Secret: {secret_name} (新值: {masked})")
 
     try:
-        from nacl import public, encoding
-    except ImportError:
-        log("ERROR", "缺少 pynacl 库，请运行: pip install pynacl")
-        return False
-
-    try:
-        owner, repo = repository.split("/")
-    except ValueError:
-        log("ERROR", f"仓库名格式错误: {repository}，应为 owner/repo")
-        return False
-
-    api_base = "https://api.github.com"
-    headers = {
-        "Authorization": f"token {token}",
-        "Accept": "application/vnd.github+json",
-        "X-GitHub-Api-Version": "2022-11-28",
-    }
-
-    try:
-        # 1. 获取仓库公钥
-        log("INFO", f"获取仓库 {repository} 的公钥...")
-        resp = requests.get(
-            f"{api_base}/repos/{owner}/{repo}/actions/secrets/public-key",
-            headers=headers,
-            timeout=30,
+        proc = subprocess.run(
+            ["gh", "secret", "set", secret_name, "--body", new_value],
+            capture_output=True, text=True, timeout=30, check=False,
         )
-        resp.raise_for_status()
-        key_data = resp.json()
-
-        # 2. 加密 secret 值
-        public_key = public.PublicKey(key_data["key"].encode(), encoding.Base64Encoder())
-        sealed_box = public.SealedBox(public_key)
-        encrypted = sealed_box.encrypt(secret_value.encode())
-
-        # 3. 更新 secret
-        log("INFO", f"更新 Secret: {secret_name}")
-        payload = {
-            "encrypted_value": base64.b64encode(encrypted).decode(),
-            "key_id": key_data["key_id"],
-        }
-        resp = requests.put(
-            f"{api_base}/repos/{owner}/{repo}/actions/secrets/{secret_name}",
-            headers=headers,
-            json=payload,
-            timeout=30,
-        )
-        resp.raise_for_status()
-
-        log("INFO", f"GitHub Secret '{secret_name}' 更新成功！")
-        return True
-
-    except requests.exceptions.HTTPError as e:
-        log("ERROR", f"GitHub API HTTP 错误: {e}")
-        try:
-            log("ERROR", f"响应内容: {resp.text}")
-        except Exception:
-            pass
-        return False
+        if proc.returncode == 0:
+            log("INFO", f"✅ {secret_name} 更新成功")
+            return True
+        else:
+            log("ERROR", f"更新失败: {proc.stderr.strip()}")
+            return False
     except Exception as e:
-        log("ERROR", f"更新 GitHub Secret 失败: {e}")
+        log("ERROR", f"异常: {e}")
         return False
 
 
@@ -408,7 +340,7 @@ def run_checkin():
     all_cookies["user_id"] = USER_ID
 
     for name, value in all_cookies.items():
-        session.cookies.set(name, value, domain=SITE_DOMAIN, path="/")
+        session.cookies.set(name, value, domain="anyrouter.top", path="/")
 
     log("INFO", f"已设置 {len(all_cookies)} 个 Cookie: {list(all_cookies.keys())}")
 
@@ -420,7 +352,6 @@ def run_checkin():
 
     if not user_info_1:
         log("ERROR", "API 验证失败，Session 可能已过期")
-        browser_close_msg = ""
         send_telegram(
             f"❌ <b>Anyrouter 登录失败</b>\n"
             f"👤 账户: {USER_ID}\n"
@@ -443,7 +374,6 @@ def run_checkin():
 
     # ---------- Step 5: 等待 3 秒后重新获取余额 ----------
     log("INFO", "等待 3 秒后重新获取余额...")
-    import time
     time.sleep(3)
 
     user_info_2 = get_user_info(session, headers)
@@ -460,16 +390,13 @@ def run_checkin():
         log("INFO", f"余额未变化: {first_balance}")
 
     # ---------- Step 7: 检查 Session 有效期 ----------
-    session_to_check = SESSION
-    remaining_days, need_update = check_session_expiry(
-        session_to_check, SESSION_TTL_DAYS, SESSION_THRESHOLD_DAYS
-    )
+    remaining_days, need_update = check_session_expiry(SESSION)
 
     # ---------- Step 8: 若 Session 即将过期，更新 GitHub Secret ----------
     session_status = ""
     if need_update:
-        log("WARN", "Session 即将过期，尝试通过 GitHub PAT 更新 Secret...")
-        success = update_github_secret(GITHUB_TOKEN, GITHUB_REPOSITORY, "SESSION", SESSION)
+        log("WARN", "Session 即将过期，尝试更新 GitHub Secret...")
+        success = update_github_secret("SESSION", SESSION)
         if success:
             session_status = f"✅ Session 已自动更新（剩余 {remaining_days:.1f} 天）" if remaining_days else "✅ Session 已自动更新"
         else:
