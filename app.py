@@ -11,13 +11,11 @@ import traceback
 from datetime import datetime, timezone, timedelta
 from playwright.sync_api import sync_playwright
 
-# ============================================================
-# 环境变量配置
-# ============================================================
-USER_ID      = os.getenv("USER_ID") or "173952"
-SESSION      = os.getenv("SESSION") or "MTc4Mjk2Nzk5N3xEWDhFQVFMX2dBQUJFQUVRQUFEXzVQLUFBQWNHYzNSeWFXNW5EQVlBQkhKdmJHVURhVzUwQkFJQUFnWnpkSEpwYm1jTUNBQUdjM1JoZEhWekEybHVkQVFDQUFJR2MzUnlhVzVuREFjQUJXZHliM1Z3Qm5OMGNtbHVad3dKQUFka1pXWmhkV3gwQm5OMGNtbHVad3dGQUFOaFptWUdjM1J5YVc1bkRBWUFCRWhOUjFnR2MzUnlhVzVuREEwQUMyOWhkWFJvWDNOMFlYUmxCbk4wY21sdVp3d09BQXhCTkhZeWNrdDFia05XVUVNR2MzUnlhVzVuREFRQUFtbGtBMmx1ZEFRRkFQMEZUd0FHYzNSeWFXNW5EQW9BQ0hWelpYSnVZVzFsQm5OMGNtbHVad3dRQUE1c2FXNTFlR1J2WHpFM016azFNZz09fKughFbFl4sHiBeB3s4UApu9M0ph8mPSn9n9OMYZnGfr"
-TG_BOT_TOKEN = os.getenv("TG_BOT_TOKEN") or "7535846002:AAF-b51hzSRufs1UGt6o-9hZEvVB5wwMJOM"  # Telegram bot token,不需要通知可以留空
-TG_CHAT_ID   = os.getenv("TG_CHAT_ID") or "6018078561"    # Telegram chat id
+# 环境变量配置(私库可直接在双引号内填写,session建议填写secrets,需要自动更新)
+USER_ID      = os.getenv("USER_ID") or ""  # 用户ID,必填,登录后右上角个人设置里进去就看到ID了,一般是6位数
+SESSION      = os.getenv("SESSION") or ""  # session必填,登录后F12或右键检查菜单进去,选择应用程序或Appcations栏,找到cookie,右边找到session的值
+TG_BOT_TOKEN = os.getenv("TG_BOT_TOKEN") or ""  # Telegram bot token,不需要通知可以留空
+TG_CHAT_ID   = os.getenv("TG_CHAT_ID") or ""    # Telegram chat id
 
 SITE_URL = "https://anyrouter.top"
 SESSION_TTL_DAYS = 30  # Session 有效期 30 天，剩余 < 3 天则更新
@@ -25,14 +23,11 @@ SESSION_THRESHOLD_DAYS = 3
 QUOTA_PER_DOLLAR = 500000 
 WAF_COOKIE_NAMES = ["acw_tc", "cdn_sec_tc", "acw_sc__v2"]
 
-# ============================================================
 # 工具函数
-# ============================================================
 def log(level: str, msg: str):
     """带时间戳的日志输出"""
     ts = datetime.now().strftime("%H:%M:%S")
     print(f"[{ts}] [{level}] {msg}", flush=True)
-
 
 def decode_session_timestamp(session_value: str) -> int | None:
     if not session_value:
@@ -66,7 +61,6 @@ def decode_session_timestamp(session_value: str) -> int | None:
 
     return None
 
-
 def check_session_expiry(session_value: str):
     timestamp = decode_session_timestamp(session_value)
     if not timestamp:
@@ -93,7 +87,6 @@ def check_session_expiry(session_value: str):
 
     return remaining_days, need_update
 
-
 def update_github_secret(secret_name: str, new_value: str) -> bool:
     """通过 gh CLI 更新 GitHub Actions Secret"""
     if not new_value:
@@ -118,7 +111,6 @@ def update_github_secret(secret_name: str, new_value: str) -> bool:
         log("ERROR", f"异常: {e}")
         return False
 
-
 def send_telegram(message: str) -> bool:
     """发送 Telegram 消息"""
     if not TG_BOT_TOKEN or not TG_CHAT_ID:
@@ -141,10 +133,7 @@ def send_telegram(message: str) -> bool:
         log("ERROR", f"Telegram 发送失败: {e}")
         return False
 
-
-# ============================================================
 # WAF Cookie 获取
-# ============================================================
 def get_waf_cookies() -> dict:
     """
     使用 Playwright 浏览器访问登录页面，获取 WAF Cookie。
@@ -199,10 +188,7 @@ def get_waf_cookies() -> dict:
 
     return waf_cookies
 
-
-# ============================================================
 # API 调用
-# ============================================================
 def build_headers() -> dict:
     """构建 API 请求头"""
     return {
@@ -221,7 +207,6 @@ def build_headers() -> dict:
         "Sec-Fetch-Site": "same-origin",
         "new-api-user": USER_ID,
     }
-
 
 def get_user_info(session: requests.Session, headers: dict) -> dict | None:
     """
@@ -257,7 +242,6 @@ def get_user_info(session: requests.Session, headers: dict) -> dict | None:
         log("WARN", f"获取用户信息失败: {e}")
 
     return None
-
 
 def do_check_in(session: requests.Session, headers: dict) -> bool:
     """
@@ -300,7 +284,6 @@ def do_check_in(session: requests.Session, headers: dict) -> bool:
         log("ERROR", f"签到请求异常: {e}")
         return False
 
-
 def format_balance(quota: int) -> str:
     """将 quota 转换为美元显示"""
     if quota is None:
@@ -310,10 +293,7 @@ def format_balance(quota: int) -> str:
         return f"{int(balance)}$"
     return f"{balance:.2f}$"
 
-
-# ============================================================
 # 主流程
-# ============================================================
 def run_checkin():
     now_str = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
 
@@ -421,7 +401,6 @@ def run_checkin():
 
     log("INFO", "=== 脚本执行完毕 ===")
 
-
 def main():
     try:
         run_checkin()
@@ -439,7 +418,6 @@ def main():
             f"📝 错误: {error_msg}"
         )
         sys.exit(1)
-
 
 if __name__ == "__main__":
     main()
